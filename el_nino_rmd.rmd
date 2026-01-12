@@ -488,7 +488,7 @@ spi.p
 # Figure 1 Climate
 SIfig1 <-  ((spi.p / cate)|climate23) + plot_layout(ncol = 2, widths = c(1, 1.75))
 # Display the combined plot
-windows();print(SIfig1)
+print(SIfig1)
 #ggsave("plots/SIfig1.png", width = 8, height = 5, dpi = 300)
 
 ## plot monthly precipitation average (Jan-Dec)
@@ -1536,7 +1536,7 @@ combined_figure <- top_row / lai_plot +
  plot_layout(heights = c(1, 1))
 
 # Display the combined figure
-windows(); print(combined_figure)
+ print(combined_figure)
 
 #ggsave("plots/fig3.png", combined_figure, width = 8, height = 5, dpi = 300)
 
