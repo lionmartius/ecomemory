@@ -1,0 +1,1759 @@
+---
+title: "Amazonian trees under long-term drought exposure are more resilient to El Niño extreme"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: united
+    highlight: tango
+date: "2024-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R-Markdown - Lion R. Martius
+This R Markdown documents the workflow of the data analysis for the paper entitled: Amazonian trees under long-term drought exposure are more resilient to El Niño extreme.
+The docuemt has been designed to facilitate workflow and reproducibility of the data analysis. 
+The analysis is based on the data collected in the Caxiuanã National Forest, Pará, Brazil, during the El Niño event of 2023/24.
+
+```{r load-packages, message=FALSE, warning=FALSE, include=TRUE}
+# Required Packages
+# Required Packages
+library(ggplot2)
+library(readxl)
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(drought)
+library(SPEI)
+library(lubridate)
+library(stringr)
+library(BIOMASS)
+library(gam)
+library(summarytools)
+library(patchwork)
+library(grid)
+library(lme4)
+library(MuMIn)
+library(lmerTest)
+library(devtools)
+library(patchwork)
+library(ggbreak)
+# devtools::install_github("lmterryn/ITSMe", build_vignettes = TRUE)
+library(ITSMe)
+library(emmeans)
+```
+
+## Data
+The analysis consists of different datasets.
+
+1.  *met23:*    precipitation data from Caxiuanã, Amazônia, 2023.
+2.  *met_long:* long-term meteorological data from Caxiuanã, Amazônia, 2001-2023
+3.  *precip:*   long-term precipitation data from Caxiuanã, Amazônia, 1981-2023
+4.  *sap:*      sapflow data with daily aggregation
+5.  *tls:*      TLS data from 2023-2024, Terrestrial Laser Scanning data of individual trees
+6.  *pavd*      Plant Area Volume Density data - Plot level structural data
+7.  *soil:*     soil moisture and biomass data from 2023-2024 (see Sanchez-Martinez, P., Martius, L.R., Bittencourt, P. et al. Amazon rainforest adjusts to long-term experimental drought. Nat Ecol Evol 9, 970–979 (2025)) https://doi.org/10.1038/s41559-025-02702-x
+8.  *leaf.vpd:* leaf water potential data together with VPD and TLS data from May 2023 to June 2024 (bi-monthly)
+9.  *lai:*      Leaf Area Index data from 2023-2024
+
+
+```{r datasets, include=FALSE}
+# 1. Meteorology data 2023
+met23 <- read.csv('data/meteorology/torre_A_vpd_LM_01-01-23_01-01-25.csv')
+# 2. Long-term meteorology data Cax 2001-2023
+met_long <- read.csv('data/meteorology/cax_met_plot_a_obs_2001_2023_hourly_cleaned.csv')
+# 3. Long-term precipitation in Cax 1981-2023
+precip <- read.csv(file='data/meteorology/monthly_precipitation_torreA_Cax_1981-2024_gapfilled_Martius.csv')
+# 4. Sapflow data for Control and TFE trees 
+sap <- read.csv('data/sapflow/sapflow_cax_elnino.csv')
+# 5. Terrestrial Laser Scanning data of individual trees
+tls <- read.csv('data/tls/radar_structural_traits.csv')
+# 6. Plant Area Volume Density data - Plot level structural data
+pavd <- read.csv("data/tls/average_profiles_2023.csv")
+# 7. Soil moisture/biomass data
+soil <- read.csv("data/meteorology/wc_biomass_2023_2024.csv")
+# 8. Leaf water potential data (combined with VPD and TLS structure for stringency calculation)
+leaf.vpd <- read.csv('data/water_potential/leaf_vpd_combined.csv')  
+# 9. Leaf Area Index data from 2023-2024
+lai <- read.csv('data/lai/LAI_combined_2023_2024.csv')
+```
+
+
+## Climate Data 
+```{r met data, echo=FALSE, warning = FALSE, message=FALSE, include=FALSE}
+# Climate during 2023 El Nino event
+# Data Preparation
+met23$time <- as.POSIXct(met23$time, format = "%d/%m/%Y %H:%M") # format time
+# Daily Aggregation
+daily_aggregated <- met23 %>%
+  group_by(Date = as.Date(time)) %>%
+  summarize(Daily_Rainfall = sum(precip, na.rm = TRUE))
+# Monthly Aggregation
+monthly_aggregated <- met23 %>%
+  group_by(month = as.Date(month)) %>%
+  summarize(monthly_Rainfall = sum(precip, na.rm = TRUE))
+
+# Met Summary Table
+#view(dfSummary(met23)) # summary table - detection of outliers in temperature
+quantile(met23$T.air42m, probs = c(0.01, 0.99), na.rm = TRUE)
+max(met23$T.air42m, na.rm = TRUE) # 64.8 C degrees unrealsitic - remove
+min(met23$T.air42m, na.rm = TRUE) # 1.3 C degrees unrealsitic - remove
+# Filter out outliers outwith 99% and 1% quantile
+met23 <- met23[met23$T.air42m > 23 & met23$T.air42m < 34,]
+
+# Filter for 2023 data
+ds <- met23 %>%
+  filter(year == 2023)
+# Extract the date from the timestamp
+ds$date <- as.Date(ds$time)
+
+# Calculate daily maxima for temperature and VPD, and daily minima for RH (during dry season)
+ds <- ds %>%
+  filter(month >= 8 & month <= 11)
+
+daily_max_min <- ds %>%
+  group_by(date) %>%
+  summarize(
+    daily_max_temp = max(T.air42m, na.rm = TRUE),
+    daily_max_vpd = max(vpd42m, na.rm = TRUE)*10
+  ) %>%
+  ungroup()
+
+# Calculate the mean and standard error of the daily maxima and minima
+summary_stats <- daily_max_min %>%
+  summarize(
+    mean_max_temp = mean(daily_max_temp, na.rm = TRUE),
+    se_max_temp = sd(daily_max_temp, na.rm = TRUE),
+    mean_max_vpd = mean(daily_max_vpd, na.rm = TRUE),
+    se_max_vpd = sd(daily_max_vpd, na.rm = TRUE)
+  )
+# Print the summary statistics
+ print(summary_stats)
+
+# Before plotting - get entire year period 
+ds <- met23 %>%
+  filter(year == 2023)
+ds$date <- as.Date(ds$time)
+daily_max_min <- ds %>%
+  group_by(date) %>%
+  summarize(
+    daily_max_temp = max(T.air42m, na.rm = TRUE),
+    daily_max_vpd = max(vpd42m, na.rm = TRUE)*10
+  ) %>%
+  ungroup()
+
+
+# Plot climate23
+climate23 <- ggplot() +
+  geom_line(data = daily_aggregated[daily_aggregated$Date < as.Date("2024-01-01"),], aes(x = Date, y = Daily_Rainfall, color = "Precipitation"), size = 0.3, show.legend = TRUE) +
+  geom_vline(xintercept = as.Date("2023-06-20"), linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  geom_vline(xintercept = as.Date("2023-11-30"), linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  #geom_hline(yintercept = 5, linetype = 'dashed', col = 'red') +
+  geom_line(data = daily_max_min, aes(x = date, y = daily_max_temp*(60/40), color = "T daily max"), size = 0.3) +
+  geom_line(data = daily_max_min, aes(x = date, y = daily_max_vpd*(60/40), color = "VPD daily max"), size = 0.3) +
+  scale_y_continuous(
+    name = "Precipitation [mm]",
+    sec.axis = sec_axis(~ .*(40/60), name = expression(T ~ "[" * degree * "C] / VPD [hPa]"))
+  ) +
+  scale_color_manual(
+    values = c("Precipitation" = "black", "T daily max" = "brown3", "VPD daily max" = "cornflowerblue"),
+    labels = c("Precipitation" = "Precipitation", 
+               "T daily max" = expression(T[daily[max]]), 
+               "VPD daily max" = expression(VPD[daily[max]]))
+  ) +
+  labs(x = "",
+       y = "Precipitation [mm]",
+       color = "Variable") +
+  theme_bw() +
+  theme(legend.position = c(0.87, 0.93),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.5, "lines"))
+        
+print(climate23)
+#ggsave("plots/Figures/climate2023.png", width = 5, height = 4)
+
+
+# Plot daily aggregated rainfall during El Nino 2023
+ggplot(data = daily_aggregated, aes(x = Date, y = Daily_Rainfall)) +
+  geom_line() +
+  ylab('Daily Rainfall (mm)') +
+  geom_vline(xintercept = as.Date("2023-06-20"), linetype = 'dashed', col = 'red')+
+  geom_vline(xintercept = as.Date("2023-11-30"), linetype = 'dashed', col = 'red')+
+  geom_hline(yintercept = 10, linetype = 'dashed', col = 'red')+
+  ylim(0, 75)+
+  xlim(as.Date("2023-01-01"), as.Date("2023-12-31"))+
+  theme_bw()+
+  labs(title = "Daily Aggregated Rainfall",
+       x = "Date",
+       y = "Daily Rainfall (mm)")
+
+
+
+# Long term meteorological data
+# Convert time and extract date components
+met_long$time <- as.POSIXct(met_long$time, format = "%Y-%m-%dT%H:%M:%SZ")
+met_long$date <- as.Date(met_long$time)
+met_long$year <- as.numeric(format(met_long$time, "%Y"))
+met_long$month <- as.numeric(format(met_long$time, "%m"))
+met_long$day <- as.numeric(format(met_long$time, "%d"))
+
+#view(dfSummary(met_long)) # summary table 
+# Clean temperature data (remove unrealistic values)
+met_long$temperature_42m_C[met_long$temperature_42m_C > 50 | met_long$temperature_42m_C < 15] <- NA
+met_long$temperature_28m_C[met_long$temperature_28m_C > 50 | met_long$temperature_28m_C < 15] <- NA
+
+# Calculate VPD from temperature and RH
+calculate_vpd <- function(temp_c, rh_percent) {
+  # Saturation vapor pressure (kPa) using Tetens formula
+  es <- 0.6108 * exp((17.27 * temp_c) / (temp_c + 237.3))
+  # Actual vapor pressure
+  ea <- (rh_percent / 100) * es
+  # VPD
+  vpd <- es - ea
+  return(vpd)
+}
+
+met_long$vpd_calc <- calculate_vpd(met_long$temp_best, met_long$rh_best)
+
+# Filter for dry season months (August-November) for all years
+dry_season_historical <- met_long %>%
+  filter(month %in% 8:11, year >= 2001, year <= 2023) %>%
+  filter(!is.na(temp_best) | !is.na(rh_best) | !is.na(vpd_calc))
+
+# Calculate daily statistics for historical period
+daily_historical <- dry_season_historical %>%
+  group_by(date, year, month) %>%
+  summarize(
+    daily_max_temp = max(temp_best, na.rm = TRUE),
+    daily_min_temp = min(temp_best, na.rm = TRUE),
+    daily_mean_temp = mean(temp_best, na.rm = TRUE),
+    daily_max_vpd = max(vpd_calc, na.rm = TRUE),
+    daily_min_vpd = min(vpd_calc, na.rm = TRUE),
+    daily_mean_vpd = mean(vpd_calc, na.rm = TRUE),
+    daily_max_rh = max(rh_best, na.rm = TRUE),
+    daily_min_rh = min(rh_best, na.rm = TRUE),
+    daily_mean_rh = mean(rh_best, na.rm = TRUE),
+    n_obs = n(),  # Track number of observations per day
+    .groups = 'drop'
+  ) %>%
+  # Remove days with insufficient data or infinite values
+  filter(
+    n_obs >= 12,  # At least 12 hourly observations per day
+    is.finite(daily_max_temp), 
+    is.finite(daily_max_vpd), 
+    is.finite(daily_min_rh),
+    daily_max_temp > 15, daily_max_temp < 50,  # Realistic temperature range
+    daily_max_vpd > 0, daily_max_vpd < 10,     # Realistic VPD range  
+    daily_min_rh > 0, daily_min_rh < 100       # Realistic RH range
+  )
+
+# Separate 2023 from historical baseline (2001-2022)
+historical_baseline <- daily_historical %>% filter(year < 2023)
+met23 <- daily_historical %>% filter(year == 2023)
+
+# Function to safely calculate percentile rank
+calc_percentile_safe <- function(value, historical_data) {
+  historical_clean <- historical_data[is.finite(historical_data)]
+  if (length(historical_clean) == 0 || !is.finite(value)) return(NA)
+  percentile <- (sum(historical_clean <= value) / length(historical_clean)) * 100
+  return(percentile)
+}
+
+# Function to calculate return period
+calc_return_period <- function(percentile) {
+  if (is.na(percentile) || percentile >= 100) return(NA)
+  return(1 / (1 - percentile/100))
+}
+
+
+# Prepare clean data vectors
+temp_2023_data <- met23$daily_max_temp[is.finite(met23$daily_max_temp)]
+temp_historical_data <- historical_baseline$daily_max_temp[is.finite(historical_baseline$daily_max_temp)]
+
+vpd_2023_data <- met23$daily_max_vpd[is.finite(met23$daily_max_vpd)]
+vpd_historical_data <- historical_baseline$daily_max_vpd[is.finite(historical_baseline$daily_max_vpd)]
+
+rh_2023_data <- met23$daily_min_rh[is.finite(met23$daily_min_rh)]
+rh_historical_data <- historical_baseline$daily_min_rh[is.finite(historical_baseline$daily_min_rh)]
+
+# Calculate means and percentiles
+temp_2023_mean <- mean(temp_2023_data)
+temp_percentile <- calc_percentile_safe(temp_2023_mean, temp_historical_data)
+temp_return_period <- calc_return_period(temp_percentile)
+
+vpd_2023_mean <- mean(vpd_2023_data)
+vpd_percentile <- calc_percentile_safe(vpd_2023_mean, vpd_historical_data)
+vpd_return_period <- calc_return_period(vpd_percentile)
+
+rh_2023_mean <- mean(rh_2023_data)
+rh_percentile <- calc_percentile_safe(rh_2023_mean, rh_historical_data)
+
+# Statistical significance tests
+temp_test <- NULL
+vpd_test <- NULL  
+rh_test <- NULL
+
+if (length(temp_2023_data) > 5 && length(temp_historical_data) > 5) {
+  tryCatch({
+    temp_test <- wilcox.test(temp_2023_data, temp_historical_data, alternative = "greater")
+  }, error = function(e) cat("Temperature test failed:", e$message, "\n"))
+}
+
+if (length(vpd_2023_data) > 5 && length(vpd_historical_data) > 5) {
+  tryCatch({
+    vpd_test <- wilcox.test(vpd_2023_data, vpd_historical_data, alternative = "greater")
+  }, error = function(e) cat("VPD test failed:", e$message, "\n"))
+}
+
+if (length(rh_2023_data) > 5 && length(rh_historical_data) > 5) {
+  tryCatch({
+    rh_test <- wilcox.test(rh_2023_data, rh_historical_data, alternative = "less")
+  }, error = function(e) cat("RH test failed:", e$message, "\n"))
+}
+
+# Report results
+cat("\n=== TEMPERATURE ANALYSIS ===\n")
+cat(sprintf("2023 daily max temperature: %.2f ± %.2f°C (n=%d days)\n", 
+            temp_2023_mean, sd(temp_2023_data), length(temp_2023_data)))
+cat(sprintf("Historical baseline (2001-2022): %.2f ± %.2f°C (n=%d days)\n", 
+            mean(temp_historical_data), sd(temp_historical_data), length(temp_historical_data)))
+cat(sprintf("2023 percentile rank: %.1fth percentile\n", temp_percentile))
+if (!is.na(temp_return_period)) {
+  cat(sprintf("Estimated return period: %.1f years\n", temp_return_period))
+}
+if (!is.null(temp_test)) {
+  cat(sprintf("Mann-Whitney U test: p = %.6f\n", temp_test$p.value))
+} else {
+  cat("Statistical test could not be performed\n")
+}
+
+cat("\n=== VPD ANALYSIS ===\n") 
+cat(sprintf("2023 daily max VPD: %.2f ± %.2f kPa (n=%d days)\n", 
+            vpd_2023_mean, sd(vpd_2023_data), length(vpd_2023_data)))
+cat(sprintf("Historical baseline (2001-2022): %.2f ± %.2f kPa (n=%d days)\n", 
+            mean(vpd_historical_data), sd(vpd_historical_data), length(vpd_historical_data)))
+cat(sprintf("2023 percentile rank: %.1fth percentile\n", vpd_percentile))
+if (!is.na(vpd_return_period)) {
+  cat(sprintf("Estimated return period: %.1f years\n", vpd_return_period))
+}
+if (!is.null(vpd_test)) {
+  cat(sprintf("Mann-Whitney U test: p = %.6f\n", vpd_test$p.value))
+} else {
+  cat("Statistical test could not be performed\n")
+}
+
+cat("\n=== RELATIVE HUMIDITY ANALYSIS ===\n")
+cat(sprintf("2023 daily min RH: %.2f ± %.2f%% (n=%d days)\n", 
+            rh_2023_mean, sd(rh_2023_data), length(rh_2023_data)))
+cat(sprintf("Historical baseline (2001-2022): %.2f ± %.2f%% (n=%d days)\n", 
+            mean(rh_historical_data), sd(rh_historical_data), length(rh_historical_data)))
+cat(sprintf("2023 percentile rank: %.1fth percentile\n", rh_percentile))
+if (!is.null(rh_test)) {
+  cat(sprintf("Mann-Whitney U test: p = %.6f\n", rh_test$p.value))
+} else {
+  cat("Statistical test could not be performed\n")
+}
+
+```
+
+```{r precip, include=FALSE}
+# Long term precipitation
+# Data Preparation 
+# Convert 'time' to Date format
+precip$date <- as.Date(paste0(precip$time, "-01"))
+# Order the data frame by the new 'date' column
+precip <- precip[order(precip$date),]
+# Monthly Precipitation in Caxiuanã (1981-2023)
+sd <- round(tapply(precip$precip, precip$year, sd, na.rm = T))  # annual standard deviation of precipitation
+mean <- tapply(precip$precip, precip$month, FUN = mean, na.rm = T) # monthly mean precipitation
+# Calculate mean and standard deviation for each month
+precip_avg <- precip %>%
+  group_by(month) %>%
+  summarize(
+    mean_precip = mean(precip, na.rm = TRUE),
+    sd_precip = sd(precip, na.rm = TRUE)
+  ) %>%
+  ungroup()
+precip_avg$mean_precip <- round(precip_avg$mean_precip, digits = 0)
+precip_ann <- aggregate(precip ~ year, data = precip, sum) # calculate yearly precip
+
+# definition of wet and dry season: look at barplot of monthly precipitation
+# dryseason is defined as month with precipitation < 100 mm (Aug-Nov)
+precip <- precip %>% 
+  mutate(season = ifelse(month >= 1 & month <= 7 | month == 12, 'w', 'd')) 
+
+seasonal_mean <- precip %>%
+  filter(year!= 2023 & year != 2024) %>%
+  group_by(year, season) %>%
+  summarize(mean_precip = sum(precip, na.rm = TRUE)) # calculate seasonal mean precipitation but excluding extreme year 2023 + 2024
+  
+  # Calculate the long-term mean excluding 2023 and 2024
+long_term_mean_d <- mean(seasonal_mean[seasonal_mean$season == "d",]$mean_precip, na.rm = TRUE)
+sd_d <- sd(seasonal_mean[seasonal_mean$season == "d",]$mean_precip, na.rm = TRUE)
+long_term_mean_w <- mean(seasonal_mean[seasonal_mean$season == "w",]$mean_precip, na.rm = TRUE)
+sd_w <- sd(seasonal_mean[seasonal_mean$season == "w",]$mean_precip, na.rm = TRUE)
+# Calculate the seasonal mean precipitation
+seasonal_mean_all <- precip %>%
+  group_by(year, season) %>%
+  summarize(mean_precip = sum(precip, na.rm = TRUE))
+
+# Spread the data to wide format 
+seasonal_mean_wide_all <- spread(seasonal_mean_all, season, mean_precip)
+
+# Calculate the departure from the long-term mean for all years
+seasonal_mean_wide_all$dep_d <- seasonal_mean_wide_all$d - long_term_mean_d # departure from long-term mean for dry season
+seasonal_mean_wide_all$dep_w <- seasonal_mean_wide_all$w - long_term_mean_w # departure from long-term mean for wet season
+
+el_nino_years <- c(1982, 1983, 1987, 1991, 1992, 1997, 1998, 2009, 2010, 2015, 2023)
+
+## plot 42 yr annual mean precip 
+bp_precip_long <- barplot(precip ~ year, data = precip_ann,
+        ylim = c(0,3500))+
+        text(x = barplot(precip_ann$year, plot = F),
+     y = precip_ann$precip + 1,
+     labels = precip_ann$precip,
+     pos = 3, col = 'black')
+
+
+## plot - precip [mm] departure from long-term mean (1981-2023) during dry season
+# * marked are El Nino years.
+
+cate <- ggplot(data = seasonal_mean_wide_all, aes(x = year, y = ifelse(dep_d > 0, dep_d / 2, dep_d), fill = dep_d < 0)) +
+  geom_col() +
+  xlim(1981, 2024) +
+  scale_y_continuous(
+    name = "Precipitation departure [mm]",
+    breaks = c(-150, 0, 50, 100, 150, 200, 250, 300),  # Adjusted breaks
+    labels = c(-150, 0, 100, 200, 300, 400, 500, 600)  # Correct labels for positive values
+  ) +
+  scale_fill_manual(values = c("cornflowerblue", "brown3")) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 10),
+    axis.text.y.right = element_blank(),  # Remove y-axis text on the right
+    axis.ticks.y.right = element_blank()
+  ) +
+  xlab("") +
+  geom_point(
+    data = seasonal_mean_wide_all[seasonal_mean_wide_all$year %in% el_nino_years, ],
+    aes(x = year, y = ifelse(dep_d > 0, dep_d / 2, dep_d)-5),
+    shape = 8, size = 1, color = "#9c1a29",
+    position = position_dodge(width = 2)
+  )
+# Print the plot
+print(cate)
+#ggsave("plots/Figures/precipitation_departure_dry_season.png", width = 8, height = 6)
+
+```
+
+```{r SPI, include=FALSE}
+# calculate SPI for 2023 El Nino event
+ts <- ts(precip$precip, start=c(1981, 01), end = c(2023, 12), frequency=12) #create time series from precipitation data
+spi <- spi(ts, scale = 3, distribution = 'Gamma', na.rm = TRUE) 
+plot.ts(ts)
+
+head(spi)
+spi$fitted
+spi_values <- spi$fitted
+dates <- time(spi$fitted)
+
+# Convert to data frame
+spi_df <- data.frame(Date = as.Date(dates), SPEI = spi_values)
+
+# Extract year and month for plotting purposes
+spi_df$Year <- as.numeric(format(spi_df$Date, "%Y"))
+spi_df$Month <- as.numeric(format(spi_df$Date, "%m"))
+
+# Create the plot
+spi.p <- ggplot(spi_df, aes(x = Date, y = SPEI)) +
+  geom_bar(stat = "identity", aes(fill = SPEI > 0)) +
+  ylim(-2.5, 2.5)+
+  scale_fill_manual(values = c("TRUE" = "cornflowerblue", "FALSE" = "brown3")) + #change true false according to your need
+  labs(x = "",
+       y = "SPI-3") +
+         theme_bw()+
+  theme(legend.position = "none",
+  plot.title = element_text(size = 10)) 
+spi.p
+```
+
+```{r Supplementary Figure1, echo=FALSE, fig.show='hold', fig.width=10, fig.height=7}
+# Figure 1 Climate
+SIfig1 <-  ((spi.p / cate)|climate23) + plot_layout(ncol = 2, widths = c(1, 1.75))
+# Display the combined plot
+print(SIfig1)
+#ggsave("plots/SIfig1.png", width = 8, height = 5, dpi = 300)
+
+## plot monthly precipitation average (Jan-Dec)
+SIfig3a <- ggplot(data = precip_avg, aes(x = factor(month), y = mean_precip)) +
+  geom_bar(stat = "identity", fill = "powderblue", color = "black") +
+  geom_errorbar(aes(ymin = mean_precip, ymax = mean_precip + sd_precip), 
+                width = 0.2, color = "black", alpha = 0.3) +
+  geom_text(aes(label = round(mean_precip, 0)), vjust = +1.2, size = 3) +
+  ylim(0, 500) +
+  labs(
+    x = "Month",
+    y = "Monthly Precipitation Average 1981-2023 [mm]"
+  ) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "red", size = 0.25, alpha = 0.7) +
+  theme_bw()
+
+#ggsave("plots/Figures/Supplementary_Figures/precipitation_avg_Cax.png", width = 5, height = 4)
+
+# barplot of monthly precipiation for 2023
+SIfig3b <- ggplot(data = precip[precip$year == 2023,], aes(x = factor(month), y = precip)) +
+  geom_bar(stat = "identity", fill = "powderblue", color = "black") +
+  geom_text(aes(label = round(precip, 0)), vjust = +1.2, size = 3) +
+  ylim(0, 500) +
+  labs(
+    x = "Month",
+    y = "Monthly Precipitation Average 2023 [mm]"
+  ) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "red", size = 0.25, alpha = 0.7) +
+  theme_bw()
+#ggsave("plots/Figures/Supplementary_Figures/precipitation_avg_2023_Cax.png", width = 5, height = 4)
+```
+
+## Ecophysiological and Structural Data 
+
+```{r sapflow resilience, include=FALSE}
+sap$date <- as.Date(sap$date, format = "%Y-%m-%d")
+sap$plot <- as.factor(sap$plot)
+
+## Resilience - Sapflow 
+
+# Reduce variations
+sap$rollmean <- zoo::rollmedian(sap$gf_cleaned_bl_sap_flux_Kg_day, k = 5, fill = NA)
+sap$resilience <- NA
+
+# Loop through each plot
+for (plot in unique(sap$plot)) {
+  print(paste("Processing plot:", plot))
+  
+  # Subset the data for the current plot
+  plot_data <- sap[sap$plot == plot,]
+  
+  # Loop through each ID within the current plot
+  for (ID in unique(plot_data$ID)) {
+    print(paste("Processing ID:", ID))
+    
+    # Subset the data for the current ID
+    sub_tree <- plot_data[plot_data$ID == ID,]
+    
+    # Find the pre-drought mean value for each individual (ID)
+    pre_drought_mean <- median(sub_tree$rollmean[sub_tree$date > '2023-05-01' & 
+                                               sub_tree$date < '2023-06-15'], na.rm = TRUE)
+    
+    # Calculate resilience at each time point
+    sap$resilience[sap$ID == ID & sap$plot == plot] <- sub_tree$rollmean / pre_drought_mean
+  }
+}
+
+r.sf <- ggplot(data = sap, aes(y = resilience, x = date)) +
+  geom_point(aes(color = ID)) +
+  geom_smooth(method = "gam", se = FALSE) +
+  labs(x = "Date", y = "Resilience]") +
+  theme_bw() +
+  xlim(as.Date("2023-05-01"), as.Date("2024-07-01"))+
+  coord_cartesian(ylim = c(0, 2.5))+
+  theme(legend.position = "none")+
+  facet_wrap(~plot)
+
+# number of unique trees 
+for(plot in unique(sap$plot)){
+  cat("Number of unique trees in plot", plot, ":", length(unique(sap$ID[sap$plot == plot])), "\n")
+}
+# Total unique trees
+length(unique(sap$ID))
+
+```
+
+```{r Fig1 sapflow reslience, echo=FALSE, fig.show='hold', fig.width=7, fig.height=5}
+
+# Resilience/ recovery of sapflow for each size class 
+# Calculate the mean resilience and its 95% confidence intervals for each date and plot
+sap_summary <- sap %>%
+  group_by(date, plot) %>%
+  summarize(
+    mean_resilience = mean(resilience, na.rm = TRUE),
+    lower_95ci = mean_resilience - qt(0.975, df = n() - 1) * sd(resilience, na.rm = TRUE) / sqrt(n()),
+    upper_95ci = mean_resilience + qt(0.975, df = n() - 1) * sd(resilience, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  ungroup()
+
+# Merge the calculated values back into the original sap data frame
+sap.rl <- left_join(sap, sap_summary, by = c("date", "plot"))
+
+p_resilience <- ggplot(data = sap.rl, aes(x = date, y = resilience)) +
+  # Confidence intervals
+  geom_ribbon(aes(ymin = lower_95ci, ymax = upper_95ci, fill = plot), alpha = 0.15, show.legend = FALSE) +
+  # GAM smooth lines
+  geom_smooth(method = 'gam', aes(group = plot, col = plot), se = FALSE, size = 2.2, alpha = 0.95) +
+  # Baseline/reference lines
+  geom_hline(yintercept = 1.0, size = 0.6, color = "black", alpha = 0.6) +
+  geom_vline(xintercept = as.Date("2023-06-23"), linetype = 'dashed', col = 'gray50', size = 0.4, alpha = 0.7) +
+  geom_vline(xintercept = as.Date("2023-11-28"), linetype = 'dashed', col = 'gray50', size = 0.4, alpha = 0.7) +
+  geom_vline(xintercept = as.Date("2024-06-25"), linetype = 'dashed', col = 'gray50', size = 0.4, alpha = 0.7) +
+  # Labels for phases
+  annotate("text", x = as.Date("2023-09-25"), y = 0.05, label = "Drought Period", 
+           vjust = 0, hjust = 0.5, size = 3.8, color = "gray25", fontface = "italic") +
+  annotate("text", x = as.Date("2024-03-15"), y = 0.05, label = "Recovery Period", 
+           vjust = 0, hjust = 0.5, size = 3.8, color = "gray25", fontface = "italic") +
+  # Performance labels - better aligned
+  annotate("text", x = as.Date("2024-04-20"), y = 1.12, 
+           label = "Full Recovery", color = "goldenrod3", size = 3.4, fontface = "bold", hjust = 0) +
+  annotate("text", x = as.Date("2023-10-05"), y = 0.92, 
+           label = "Higher Drought\nResistance", color = "goldenrod3", size = 3.4, fontface = "bold", hjust = 0) +
+  annotate("text", x = as.Date("2024-04-20"), y = 0.55, 
+           label = "Limited Recovery", color = "#404788FF", size = 3.4, fontface = "bold", hjust = 0) +
+  annotate("text", x = as.Date("2023-10-05"), y = 0.45, 
+           label = "Lower Drought\nResistance", color = "#404788FF", size = 3.4, fontface = "bold", hjust = 0) +
+  # Axis labels
+  ylab(expression("hydraulic function (relative transpiration)")) +
+  xlab("") +
+  # Professional palette
+  scale_color_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                     labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                    labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  # Theme tweaks for publication
+  theme_classic(base_size = 13) +
+  theme(
+    legend.position = c(0.12, 0.90),
+    legend.title = element_blank(), 
+    legend.text = element_text(size = 11, face = "bold"),
+    legend.background = element_rect(fill = "white", color = "gray70", size = 0.3),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 11, color = "black"),
+    axis.line = element_line(size = 0.8),
+    axis.ticks = element_line(size = 0.6),
+    panel.grid.major.y = element_line(color = "gray90", size = 0.3),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(15, 15, 15, 15)
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 4, alpha = 1))) +
+  labs(color = NULL)
+
+print(p_resilience)
+#ggsave("plots/fig1.png", width = 10, height = 6)
+
+```
+
+```{r merge sap, tls and soil data, include=FALSE}
+
+# remove plot from tls
+tls <- tls %>%
+  select(-plot)
+
+# compute stem volume using Chave et al 2014
+tls$volume_stem <- 0.088*(tls$height_m * (tls$diameter_m)^2)^0.954
+
+# Relative Crown Area Computation
+tls$area_crown_to_dbh <- tls$crown_area_m2 / tls$diameter_m
+
+tls$area_crown_to_cross_sectional_area <- tls$crown_area_m2 / (pi * (tls$diameter_m/2)^2)
+
+tls$area_crown_to_dbh2 <- tls$crown_area_m2 / tls$diameter_m^2
+
+tls$area_crown_to_stem_volume <- tls$crown_area_m2 / tls$volume_stem
+
+
+# Relative Crown Volume Computation
+tls$volume_crown_to_dbh <- tls$crown_volume_m3 / tls$diameter_m
+
+tls$volume_crown_to_volume_stem <- tls$crown_volume_m3 / tls$volume_stem
+
+tls$volume_crown_to_dbh2 <- tls$crown_volume_m3 / (pi * (tls$diameter_m/2)^2)
+
+
+# join sap with tls data
+sap.tls <- left_join(sap, tls, by = "ID")
+
+# compute stem biomass using Chave et al 2014
+sap.tls$stem_biomass <-  0.088*(sap.tls$WD * sap.tls$height_m * (sap.tls$diameter_m)^2)^0.954
+sap.tls$area_crown_to_stem_biomass <- sap.tls$crown_area_m2 / sap.tls$stem_biomass
+sap.tls$volume_crown_to_stem_biomass <- sap.tls$crown_volume_m3 / sap.tls$stem_biomass
+
+
+# Check soil data
+soil$date <- as.Date(soil$date)
+soil$numdate <- as.numeric(soil$date)
+soil$plot <- factor(soil$plot, levels = c("Control", "TFE"))
+
+sap.tls.soil <- left_join(sap.tls, soil, by = c("date", "plot"))
+
+
+```
+
+```{r resistance and resilience analyses, include=FALSE}
+
+# DROUGHT RESISTANCE ANALYSIS
+# Subset sap data for drought period
+sap.rs <- sap.tls.soil[sap.tls.soil$date > "2023-06-22" & sap.tls.soil$date < "2023-11-30",]
+sap.rs$numdate <- as.numeric(sap.rs$date)
+# Make numdate start at 0 and count upwards
+sap.rs$numdate <- sap.rs$numdate - min(sap.rs$numdate, na.rm = TRUE)
+
+# crown volume is not normally distributed, log-transform
+sap.rs$log_vol <- log(sap.rs$crown_volume_m3)
+#scale predictor variables
+sap.rs$log_vol_c <- scale(sap.rs$log_vol, scale = FALSE)
+sap.rs$swc_c     <- scale(sap.rs$wc_per_biomass_mm_MgC, scale = FALSE)
+sap.rs$numdate_c <- scale(sap.rs$numdate, scale = FALSE)
+
+
+# Build linear mixed-effects model for drought resistance
+
+# SIMPLE MODEL
+lmm <- lmer(resilience ~ numdate * plot  + (1 | ID), data = sap.rs) # volume_crown_to_dbh2:numdate 
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+# predict drought resistance at end of drought period
+# Create prediction data for drought end
+drought_end_day <- max(sap.rs$numdate, na.rm = TRUE)  # Use actual max day from your data
+pred_data <- data.frame(
+  numdate = drought_end_day,
+  plot = c("Control", "TFE"),
+  crown_vol_scaled = 0  # At mean crown volume
+)
+
+# Get predictions with confidence intervals
+predictions <- emmeans(lmm, ~ plot, at = list(numdate = drought_end_day, crown_vol_scaled = 0))
+summary(predictions, infer = TRUE)
+
+
+# CROWN MODEL
+lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + numdate_c:log_vol_c  + (1 | ID), data = sap.rs) # adding crown architecture and swc/biomass
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+
+
+# CROWN + SWC MODEL
+lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + swc_c + numdate_c:log_vol_c + numdate_c:swc_c + (1 | ID), data = sap.rs)
+summary(lmm) # plot ns - drop
+lmm <- lmer(resilience ~ numdate * wc_per_biomass_mm_MgC + log_vol + numdate:log_vol  + (1 | ID), data = sap.rs)
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+
+
+# POST-DROUGHT RESILIENCE ANALYSIS
+# Subset sap data for post-drought recovery period
+sap.rl <- sap.tls.soil[sap.tls.soil$date > "2023-11-29" & sap.tls.soil$date < "2024-06-23",]
+sap.rl$numdate <- as.numeric(sap.rl$date)
+
+# Make numdate start at 0 and count upwards
+sap.rl$numdate <- sap.rl$numdate - min(sap.rl$numdate, na.rm = TRUE)
+# crown volume is not normally distributed, log-transform
+sap.rl$log_vol <- log(sap.rl$crown_volume_m3)
+#scale predictor variables
+sap.rl$log_vol_c <- scale(sap.rl$log_vol, scale = FALSE)
+sap.rl$swc_c     <- scale(sap.rl$wc_per_biomass_mm_MgC, scale = FALSE)
+sap.rl$numdate_c <- scale(sap.rl$numdate, scale = FALSE)
+
+# SIMPLE MODEL
+lmm <- lmer(resilience ~ numdate * plot + (1 | ID), data = sap.rl)
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)  
+r.squaredGLMM(lmm)
+confint(lmm)
+
+# CROWN MODEL
+lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + numdate_c:log_vol_c  + (1 | ID), data = sap.rl)
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+# CROWN + SWC MODEL
+lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + swc_c + numdate_c:log_vol_c + numdate_c:swc_c + (1 | ID), data = sap.rl)
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+# log volume ns - remove
+lmm <- lmer(resilience ~ numdate_c * plot + swc_c + numdate_c:swc_c + (1 | ID), data = sap.rl)
+summary(lmm)
+anova(lmm)
+ranova(lmm, reduce.terms = TRUE)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+
+# RECOVERY - HOW MANY DAYS TO FULL RECOVERY (RESILIENCE = 1)
+
+# Full Recovery is assumed when resilience reaches 1.0
+# Calculate the mean resilience for each plot for each day
+# at least for 5 consecutive Days at 1.0
+
+# Calculate the mean resilience for each plot for each day
+mean_resilience_per_day <- sap.rl %>%
+  group_by(date, plot) %>%
+  summarize(mean_resilience = mean(resilience, na.rm = TRUE)) %>%
+  ungroup()
+# Identify the first day when the mean resilience for each plot stays above 1.0 for x consecutive days
+first_day_reaching_1_for_5_days <- mean_resilience_per_day %>%
+  group_by(plot) %>%
+  arrange(date) %>%
+  mutate(above_1 = rollapply(mean_resilience, width = 5, FUN = function(x) all(x >= 1.0), fill = NA, align = "right")) %>%
+  filter(above_1 == TRUE) %>%
+  summarize(first_day = min(date))
+
+# Print the result
+print(first_day_reaching_1_for_5_days)
+as.numeric(as.Date("2024-04-20")) - as.numeric(as.Date("2023-11-29"))
+# TFE reaches full recovery on day 143 (2024-04-14)
+# Control does not reach full recovery within the observation period
+```
+
+```{r leaf water potential & stringency, include=FALSE}
+# Calculate Stringency
+# Convert Campaign to Factor
+leaf.vpd$campaign <- factor(leaf.vpd$campaign, levels = c("May-23", "Jul-23", "Oct-23", "Dec-23", 
+                                                              "Feb-24", "May-24"))
+# # remove the Dec-23 campaign as no large trees were sampled due to missing professional climbers
+leaf.vpd <- leaf.vpd[leaf.vpd$campaign != "Dec-23",]
+leaf.vpd$plot <- factor(leaf.vpd$plot, levels = c("Control", "TFE"))                                                              
+
+# Calculate g/KL for each VPD height and store in respective columns
+leaf.vpd$g_K.16 <- (leaf.vpd$wp_pd - leaf.vpd$wp_md)/leaf.vpd$vpd16m
+leaf.vpd$g_K.42 <- (leaf.vpd$wp_pd - leaf.vpd$wp_md)/leaf.vpd$vpd42m
+
+# If tree height > median (27 m), use vpd42m (g_K.42), else use vpd16m (g_K.16)
+leaf.vpd$g_KL <- ifelse(leaf.vpd$height_m > 27, 
+                        leaf.vpd$g_K.42, 
+                        leaf.vpd$g_K.16)
+
+# calculate whole forest g/KL max (99th/95th & 90th quantile) for the well watered reference value
+# Initialize lists to store the results
+results <- list()
+
+# Loop through each plot
+for (plot in unique(leaf.vpd$plot)) {
+  # Subset data for the current plot
+  plot_data <- leaf.vpd[leaf.vpd$plot == plot,]
+  
+  # Calculate quantiles for entire plot (no height stratification)
+  qtl90.g_K <- quantile(plot_data$g_KL, 0.90, na.rm = TRUE)
+  qtl95.g_K <- quantile(plot_data$g_KL, 0.95, na.rm = TRUE)
+  qtl99.g_K <- quantile(plot_data$g_KL, 0.99, na.rm = TRUE)
+  
+  # Calculate hydraulic forcing psi(hf) = psi(soil) - qtl.g_K * VPD
+  # Use height specific VPD measurements
+  plot_data$hf90 <- ifelse(plot_data$height_m > 27, 
+                           plot_data$wp_pd - (qtl90.g_K * plot_data$vpd42m),
+                           plot_data$wp_pd - (qtl90.g_K * plot_data$vpd16m))
+
+  plot_data$hf95 <- ifelse(plot_data$height_m > 27, 
+                           plot_data$wp_pd - (qtl95.g_K * plot_data$vpd42m),
+                           plot_data$wp_pd - (qtl95.g_K * plot_data$vpd16m))
+
+  plot_data$hf99 <- ifelse(plot_data$height_m > 27, 
+                           plot_data$wp_pd - (qtl99.g_K * plot_data$vpd42m),
+                           plot_data$wp_pd - (qtl99.g_K * plot_data$vpd16m))
+
+  # Use 95th percentile for hydraulic forcing (note, 95th percentile is more conservative than 99th)
+  plot_data$hf <- plot_data$hf95
+
+  # Stringency - total, vpd and against soil
+  plot_data$S_ws <- plot_data$wp_md - plot_data$hf
+  plot_data$S_VPD <- ifelse(plot_data$height_m > 27, 
+                            plot_data$wp_pd + (plot_data$vpd42m * (qtl95.g_K - plot_data$g_K.42)),
+                            plot_data$wp_pd + (plot_data$vpd16m * (qtl95.g_K - plot_data$g_K.16)))
+  plot_data$S_soil <- plot_data$wp_md - plot_data$wp_pd
+  
+  # Store the results in the list
+  results[[plot]] <- plot_data
+}
+
+# Combine the results back into a single data frame
+leaf.vpd <- do.call(rbind, results)
+
+# delta pd-md
+leaf.vpd$delta_pd_md <- leaf.vpd$wp_md - leaf.vpd$wp_pd
+
+```
+
+```{r Fig2, echo=FALSE, fig.show='hold', fig.width=7, fig.height=5}
+# Create height categories for trees above and below 27m
+leaf.vpd$height_category <- ifelse(leaf.vpd$height_m > 27, "Canopy", "Subcanopy")
+
+ggplot(leaf.vpd, aes(x = g_KL, fill = plot)) + 
+  geom_density(alpha = 0.6, position = "identity") + 
+  # Calculate quantiles for each plot and create legend
+  geom_vline(data = leaf.vpd %>% 
+               group_by(plot) %>% 
+               summarize(
+                 q50 = quantile(g_KL, 0.50, na.rm = TRUE),
+                 q90 = quantile(g_KL, 0.90, na.rm = TRUE),
+                 q95 = quantile(g_KL, 0.95, na.rm = TRUE),
+                 q99 = quantile(g_KL, 0.99, na.rm = TRUE),
+                 .groups = 'drop') %>%
+               pivot_longer(cols = starts_with("q"), names_to = "quantile", values_to = "value"),
+             aes(xintercept = value, color = quantile, linetype = quantile), 
+             size = 0.7, alpha = 0.7) +
+  scale_color_manual(
+    values = c("q50" = "black", "q90" = "blue", "q95" = "darkgreen", "q99" = "red"),
+    labels = c("q50" = "Median (50th)", "q90" = "90th Percentile", 
+               "q95" = "95th Percentile", "q99" = "99th Percentile"),
+    name = "Quantile") +
+  scale_linetype_manual(
+    values = c("q50" = "dashed", "q90" = "dashed", "q95" = "dashed", "q99" = "dashed"),
+    labels = c("q50" = "Median (50th)", "q90" = "90th Percentile", 
+               "q95" = "95th Percentile", "q99" = "99th Percentile"),
+    name = "Quantile") +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                    name = "Treatment") +
+  scale_x_continuous(limits = c(0, 5.5)) +
+  labs(
+    title = expression("Density Distribution of " ~ g / K[L] ~ " by Treatment"),
+    x = expression(g / K[L]), 
+    y = "Density"
+  ) +
+  theme_bw() +
+  theme(legend.position = "top") +
+  facet_wrap(~ plot, dir = "v", scales = "free_x")
+
+#ggsave("plots/Figures/Supplementary_Figures/g_KL_density.png", width = 5, height = 10)
+
+
+## Stringency (soil, vpd and tot) against hydraulic forcing
+ggplot(data = leaf.vpd) +
+  geom_point(colour = 'black', mapping = aes(x = hf, y = S_ws)) +
+  geom_smooth(method = "lm", se = TRUE, colour = 'black', mapping = aes(x = hf, y = S_ws)) +
+  geom_point(colour = "blue", mapping = aes(x = hf, y = S_soil, group = campaign)) +
+  geom_smooth(method = "lm", se = TRUE, colour = 'blue', mapping = aes(x = hf, y = S_soil)) +
+  geom_point(colour = "red", mapping = aes(x = hf, y = S_VPD, group = campaign)) +
+  geom_smooth(method = "lm", se = TRUE, colour = 'red', mapping = aes(x = hf, y = S_VPD)) +
+  theme_bw()+
+  theme(legend.position = c(0.2, 0.8),
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 8)) +
+  # facet_wrap(~campaign) +
+  annotate("text", x = -4, y = 5.3, label = "Stringency (total)", colour = "black") +
+  annotate("text", x = -4, y = 5, label = "Stringency against WP soil", colour = "blue") +
+  annotate("text", x = -4, y = 4.7, label = "Stringency against VPD", colour = "red")+
+  xlab("Hydraulic Forcing [MPa]") +
+  ylab("Stringency [MPa]") +
+  facet_wrap(~plot) 
+
+#ggsave("plots/Figures/Supplementary_Figures/stringency_hf.png", width = 8, height = 8)
+
+# Filter data to include Feb'24 and May'24 for post-drought
+#leaf.vpd <- leaf.vpd[leaf.vpd$campaign %in% c("May-23", "Jul-23", "Oct-23", "Feb-24", "May-24"), ]
+
+# Create individual plots for combined stacked figure
+Sws_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = S_ws, fill = plot)) +  
+  geom_boxplot()+
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                     labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  geom_vline(xintercept = 3.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+    geom_vline(xintercept = 1.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  ylab(expression(paste('S '[ WS], ' [MPa]'))) +
+  xlab(NULL)+
+  theme_bw()+
+  theme(legend.position = c(0.85, 0.85),
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 11),
+        axis.title.y = element_text(size = 12)) +  
+  annotate("text", x = 2.5, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.9, label = "**", vjust = 0.5, hjust = 0.5, size = 6.5) +
+  annotate("text", x = 0.65, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.95, label = "A)", vjust = 0, hjust = 1, size = 4, fontface = "bold")
+
+ print(Sws_plot)
+# Plot WP md for each campaign 
+WPmd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_md, fill = plot)) +
+  geom_boxplot()+
+  theme_bw()+
+  xlab(NULL)+
+  labs(y = expression(paste(psi[md], ' [MPa]')))+
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                     labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 11),
+        axis.title.y = element_text(size = 12))+
+  geom_vline(xintercept = 3.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  geom_vline(xintercept = 1.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  annotate("text", x = 0.65, y = max(leaf.vpd$wp_md, na.rm = TRUE) * 0.95, label = "B)", vjust = 1, hjust = 1, size = 4, fontface = "bold")
+
+WPpd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_pd, fill = plot)) +
+  geom_boxplot()+
+  theme_bw()+
+  xlab(NULL)+
+  labs(y = expression(paste(psi[pd], ' [MPa]')))+
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                     labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  scale_x_discrete(labels = c("May'23", "Jul'23", "Oct'23", "Feb'24", "May'24")) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12)) +
+  geom_vline(xintercept = 3.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  geom_vline(xintercept = 1.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
+  annotate("text", x = 2, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
+  annotate("text", x = 4.5, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Post-Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
+  annotate("text", x = 1, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Pre-Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
+  annotate("text", x = 0.65, y = max(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "C)", vjust = 1, hjust = 1, size = 4, fontface = "bold")
+
+# Create combined stacked plot
+combined_wp_stringency <- Sws_plot / WPmd_plot / WPpd_plot
+combined_wp_stringency <- combined_wp_stringency + plot_layout(heights = c(1, 1, 1))
+
+# Figure 2
+print(combined_wp_stringency)
+ggsave("plots/fig2.png", combined_wp_stringency, width = 6, height = 9, dpi = 300)
+
+# DELTA WP
+
+ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = delta_pd_md, fill = plot)) +
+  geom_boxplot()+
+  geom_smooth()+
+  theme_bw()+
+  xlab(NULL)+
+  labs(y = expression(paste(Delta, " ", psi[leaf])))+
+    geom_boxplot()+
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                     labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  theme(legend.position = c(0.88, 0.93),
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 8))
+
+#ggsave("plots/Figures/Supplementary_Figures/delta_wp.png", width = 8, height = 10)
+
+count <- leaf.vpd %>%
+  group_by(campaign, plot) %>%
+  summarize(unique_ids = n_distinct(ID), .groups = "drop")
+
+
+
+# combined suppl plot
+# Create the first plot (WP_md)
+plot_wp_md <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_md, fill = plot)) +
+  geom_boxplot() +
+  geom_smooth() +
+  theme_bw() +
+  xlab(NULL) +
+  labs(y = expression(paste(psi[md], " [MPa]"))) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                    labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  theme(legend.position = c(0.88, 0.23),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 8))
+
+# Create the second plot (Delta WP)
+plot_delta_wp <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = delta_pd_md, fill = plot)) +
+  geom_boxplot() +
+  geom_smooth() +
+  theme_bw() +
+  xlab(NULL) +
+  labs(y = expression(paste(Delta, " ", psi[leaf], " [MPa]"))) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3"),
+                    labels = c("Control" = "Control Trees", "TFE" = "Primed Trees")) +
+  theme(legend.position = "none")
+
+# Combine the two plots
+combined_plot <- plot_wp_md / plot_delta_wp
+Sws_WP_plot <- Sws_plot / WPmd_plot +
+  plot_layout(ncol = 1, heights = c(1, 1)) +
+  plot_annotation(,
+    theme = theme(plot.title = element_text(hjust = 0.5))
+  )
+# Display the combined plot
+ print(Sws_WP_plot)
+
+# Save the combined plot
+#ggsave("plots/Figures/Supplementary_Figures/combined_wp_plots.png", combined_plot, width = 8, height = 10)
+
+
+```
+Here we display the plot specific distribution of g/KL for control and TFE trees, along with vertical lines indicating key quantiles (50th, 90th, 95th, and 99th percentiles) used in the stringency calculations.
+The control trees generally exhibit higher g/KL values, from more strict to more conservative thresholds of 90th, 95th and 99th percentiles.
+
+```{r stringency stats, include=FALSE}
+# DROUGHT RESISTANCE ANALYSIS
+# linear model resistance
+subset_data <- leaf.vpd[leaf.vpd$campaign == "Oct-23" | leaf.vpd$campaign == "Jul-23"| leaf.vpd$campaign == "May-23",] # 
+subset_data$plot <- factor(subset_data$plot, levels = c("Control", "TFE"))
+# linear mixed model for drought period
+lmm <- lmer(S_ws ~  plot + campaign + (1|ID), data = subset_data)
+lmm <- lmer(wp_md ~ campaign + plot + (1|ID), data = subset_data)
+lmm <- lmer(wp_pd ~  campaign + plot + (1|ID), data = subset_data)
+lmm <- lmer(delta_pd_md ~  campaign + plot + (1|ID), data = subset_data)
+
+summary(lmm)
+anova(lmm)
+ranova(lmm)
+r.squaredGLMM(lmm)
+confint(lmm)
+
+# POST-DROUGHT RESILIENCE ANALYSIS
+# linear model for post-drought
+subset_data <- leaf.vpd[leaf.vpd$campaign == "May-24"| leaf.vpd$campaign == "Feb-24",] #
+subset_data$plot <- factor(subset_data$plot, levels = c("Control", "TFE"))
+# linear mixed model for drought period
+lmm <- lmer(S_ws ~  plot + campaign + (1|ID), data = subset_data)
+lmm <- lmer(wp_md ~ campaign + plot + (1|ID), data = subset_data)
+lmm <- lmer(wp_pd ~  campaign + plot + (1|ID), data = subset_data)
+lmm <- lmer(delta_pd_md ~  campaign + plot + (1|ID), data = subset_data)
+
+summary(lmm)
+anova(lmm)
+ranova(lmm)
+r.squaredGLMM(lmm)
+
+# # compare pre to post-drought
+# subset_data <- leaf.vpd[leaf.vpd$campaign == "May-24" | leaf.vpd$campaign == "May-23",] # 
+# subset_data$plot <- factor(subset_data$plot, levels = c("Control", "TFE"))
+
+
+# # linear mixed model for drought period
+# lmm <- lmer(S_ws ~  plot * campaign + (1|ID), data = subset_data)
+# lmm <- lmer(wp_md ~ campaign + plot + (1|ID), data = subset_data)
+# lmm <- lmer(wp_pd ~  campaign + plot + (1|ID), data = subset_data)
+# lmm <- lmer(delta_pd_md ~  campaign + plot + (1|ID), data = subset_data)
+
+# summary(lmm)
+# confint(lmm)
+# r.squaredGLMM(lmm)
+
+```
+
+```{r tls structural analyses, include = FALSE}
+# TLS Structural Analysis
+# Assign relevant crown metrics for statistical testing of differences between plots
+
+crown_metrics <- c("area_crown_to_dbh", "volume_crown_to_dbh", "volume_crown_to_dbh2")
+
+# create plot from ID, where IDs that start with C are Control and T are TFE
+tls$plot <- ifelse(grepl("^C", tls$ID), "Control", "TFE")
+tls$plot <- factor(tls$plot, levels = c("Control", "TFE"))
+
+# ===== NORMALITY AND STATISTICAL TESTS FOR CROWN METRICS =====
+
+# Initialize results data frame
+crown_test_results <- data.frame(
+  metric = character(),
+  normality_control = character(),
+  normality_tfe = character(),
+  test_used = character(),
+  df = numeric(),
+  test_statistic = numeric(),
+  p_value = numeric(),
+  control_mean = numeric(),
+  tfe_mean = numeric(),
+  mean_diff = numeric(),
+  ci_lower = numeric(),
+  ci_upper = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each metric
+for (metric in crown_metrics) {
+  # Extract data by plot
+  control_data <- tls[[metric]][tls$plot == "Control"]
+  tfe_data <- tls[[metric]][tls$plot == "TFE"]
+  
+  # Remove NA values
+  control_data <- control_data[!is.na(control_data)]
+  tfe_data <- tfe_data[!is.na(tfe_data)]
+  
+  # Test normality using Shapiro-Wilk test
+  shapiro_control <- shapiro.test(control_data)
+  shapiro_tfe <- shapiro.test(tfe_data)
+  
+  # Determine normality (p > 0.05 = normal)
+  normal_control <- ifelse(shapiro_control$p.value > 0.05, "Normal", "Non-normal")
+  normal_tfe <- ifelse(shapiro_tfe$p.value > 0.05, "Normal", "Non-normal")
+  
+  cat("\n=== ", metric, " ===\n")
+  cat("Control Shapiro-Wilk test: p =", round(shapiro_control$p.value, 4), "->", normal_control, "\n")
+  cat("TFE Shapiro-Wilk test: p =", round(shapiro_tfe$p.value, 4), "->", normal_tfe, "\n")
+  
+  # Calculate descriptive statistics
+  control_mean <- mean(control_data, na.rm = TRUE)
+  tfe_mean <- mean(tfe_data, na.rm = TRUE)
+  mean_diff <- control_mean - tfe_mean
+  
+  # Choose test based on normality
+  if (normal_control == "Normal" && normal_tfe == "Normal") {
+    # Both normal - use Welch's t-test with 95% CI
+    test_result <- t.test(control_data, tfe_data, alternative = "greater", var.equal = FALSE, conf.level = 0.95)
+    test_name <- "Welch's t-test"
+    df_value <- test_result$parameter
+    test_stat <- test_result$statistic
+    ci_lower <- test_result$conf.int[1]
+    ci_upper <- test_result$conf.int[2]
+    cat("Test used: Welch's t-test (parametric)\n")
+  } else {
+    # At least one non-normal - use Wilcoxon Mann-Whitney test
+    test_result <- wilcox.test(control_data, tfe_data, alternative = "greater")
+    test_name <- "Wilcoxon Mann-Whitney"
+    df_value <- NA  # Wilcoxon test doesn't have traditional df
+    test_stat <- test_result$statistic
+    # For Wilcoxon, calculate approximate CI using bootstrap or point estimate
+    ci_lower <- NA
+    ci_upper <- NA
+    cat("Test used: Wilcoxon Mann-Whitney test (non-parametric)\n")
+  }
+  
+  # Print results
+  cat("Degrees of freedom:", ifelse(is.na(df_value), "N/A", round(df_value, 2)), "\n")
+  cat("Test statistic:", round(test_stat, 4), "\n")
+  cat("P-value:", round(test_result$p.value, 4), "\n")
+  cat("Control mean:", round(control_mean, 4), "\n")
+  cat("TFE mean:", round(tfe_mean, 4), "\n")
+  cat("Difference (Control - TFE):", round(mean_diff, 4), "\n")
+  if (!is.na(ci_lower)) {
+    cat("95% CI for difference: [", round(ci_lower, 4), ", ", round(ci_upper, 4), "]\n", sep = "")
+  }
+  cat("Significance:", ifelse(test_result$p.value < 0.05, "***", 
+                              ifelse(test_result$p.value < 0.1, "*", "ns")), "\n")
+  
+  # Store results
+  new_row <- data.frame(
+    metric = metric,
+    normality_control = normal_control,
+    normality_tfe = normal_tfe,
+    test_used = test_name,
+    df = df_value,
+    test_statistic = test_stat,
+    p_value = test_result$p.value,
+    control_mean = control_mean,
+    tfe_mean = tfe_mean,
+    mean_diff = mean_diff,
+    ci_lower = ci_lower,
+    ci_upper = ci_upper,
+    stringsAsFactors = FALSE
+  )
+  
+  crown_test_results <- rbind(crown_test_results, new_row)
+}
+
+# Print summary table
+print(crown_test_results)
+```
+
+```{r LAI, include=FALSE}
+# create plot data
+LAI_plot_data <- lai %>%
+  mutate(
+    treatment = case_when(
+      plot == "PA" ~ "Control",
+      plot == "PB" ~ "TFE",
+      TRUE ~ plot
+    ),
+    # Create proper date for temporal spacing
+    date = case_when(
+      month == "July" & year == 2023 ~ as.Date("2023-07-15"),
+      month == "October" & year == 2023 ~ as.Date("2023-10-15"), 
+      month == "September" & year == 2024 ~ as.Date("2024-09-15"),
+      TRUE ~ NA_Date_
+    ),
+    time_label = case_when(
+      month == "July" & year == 2023 ~ "July 2023",
+      month == "October" & year == 2023 ~ "Oct 2023",
+      month == "September" & year == 2024 ~ "Sep 2024",
+      TRUE ~ paste(month, year)
+    )
+  ) %>%
+  filter(Le < 7, !is.na(date))  # Remove outliers and keep all months with valid dates
+
+# Calculate summary statistics for connecting lines
+LAI_summary <- LAI_plot_data %>%
+  group_by(treatment, date, time_label) %>%
+  summarise(
+    median_LAI = median(Le, na.rm = TRUE),
+    mean_LAI = mean(Le, na.rm = TRUE),
+    q25 = quantile(Le, 0.25, na.rm = TRUE),
+    q75 = quantile(Le, 0.75, na.rm = TRUE),
+    n = n(),
+    .groups = 'drop'
+  )
+
+# Enhanced plot with connected median points
+lai_plot <- ggplot(LAI_plot_data, aes(x = date, y = Le, fill = treatment)) +
+  # Add individual points with jitter
+  geom_jitter(aes(color = treatment), width = 10, alpha = 0.3, size = 2) +
+  # Add whiskers (quartiles) without boxes
+  stat_summary(fun.data = "mean_cl_boot", geom = "errorbar", width = 15, 
+               aes(color = treatment), size = 1.2, alpha = 0.8) +
+  # Add median points
+  stat_summary(fun = "median", geom = "point", size = 4, 
+               aes(color = treatment), shape = 18) +
+  # Connect median points with lines
+  stat_summary(fun = "median", geom = "line", 
+               aes(group = treatment, color = treatment), size = 1.5, alpha = 0.8) +
+  
+  labs(title = "LAI Temporal Dynamics: Control vs TFE Treatment",
+       x = "Time",
+       y = "Leaf Area Index (Le)",
+       color = "Treatment") +
+  
+  scale_color_manual(values = c("TFE" = "goldenrod3", "Control" = "#404788FF")) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "3 months") +
+
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  ylim(2, 7) +
+  guides(fill = "none")  # Remove fill legend since we're using color
+
+print(lai_plot)
+#ggsave("plots/Figures/LAI_Temporal_Dynamics_Control_vs_TFE.png", width = 7, height = 8)
+# Print summary statistics
+
+print(LAI_summary)
+
+
+# Statistical analyses
+
+for (treat in c("Control", "TFE")) {
+  treat_data <- LAI_plot_data %>% filter(treatment == treat)
+  
+  # Prepare data by time point
+  kw_result <- kruskal.test(Le ~ time_label, data = treat_data)
+  
+  cat("\n", treat, " Plot:\n", sep = "")
+  cat("Kruskal-Wallis χ² =", round(kw_result$statistic, 2), "\n")
+  cat("p-value =", round(kw_result$p.value, 4), "\n")
+  
+  # Print medians by time point
+  medians_by_time <- treat_data %>%
+    group_by(time_label) %>%
+    summarise(median_Le = median(Le, na.rm = TRUE),
+              n = n(),
+              .groups = 'drop')
+  
+  cat("Median LAI by time point:\n")
+  print(medians_by_time)
+  
+  # Calculate percentage change for control
+  if (treat == "Control") {
+    july_median <- medians_by_time$median_Le[medians_by_time$time_label == "July 2023"]
+    sept_median <- medians_by_time$median_Le[medians_by_time$time_label == "Sep 2024"]
+    pct_change <- ((sept_median - july_median) / july_median) * 100
+    cat("Percentage change from July 2023 to Sep 2024:", round(pct_change, 1), "%\n")
+  }
+}
+
+# 2. WILCOXON SIGNED-RANK TEST FOR CONTROL PLOT TEMPORAL CHANGE
+control_july <- LAI_plot_data %>% 
+  filter(treatment == "Control", time_label == "July 2023") %>% 
+  pull(Le)
+
+control_sept <- LAI_plot_data %>% 
+  filter(treatment == "Control", time_label == "Sep 2024") %>% 
+  pull(Le)
+
+wilcoxon_control <- wilcox.test(control_july, control_sept, paired = FALSE, alternative = "greater")
+cat("Wilcoxon test (July 2023 vs Sep 2024):\n")
+cat("Test statistic =", wilcoxon_control$statistic, "\n")
+cat("p-value =", round(wilcoxon_control$p.value, 4), "\n")
+
+# 3. TREATMENT DIFFERENCES AT EACH TIME POINT (Wilcoxon test)
+cat("\n--- 3. TREATMENT DIFFERENCES AT EACH TIME POINT (Wilcoxon test) ---\n")
+
+time_points <- unique(LAI_plot_data$time_label)
+
+treatment_diff_results <- data.frame(
+  time_point = character(),
+  control_median = numeric(),
+  tfe_median = numeric(),
+  median_difference = numeric(),
+  p_value = numeric(),
+  wilcoxon_stat = numeric(),
+  n_control = numeric(),
+  n_tfe = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (tp in time_points) {
+  control_data <- LAI_plot_data %>%
+    filter(treatment == "Control", time_label == tp) %>%
+    pull(Le)
+  
+  tfe_data <- LAI_plot_data %>%
+    filter(treatment == "TFE", time_label == tp) %>%
+    pull(Le)
+  
+  wilcox_result <- wilcox.test(control_data, tfe_data, alternative = "greater")
+  
+  control_med <- median(control_data, na.rm = TRUE)
+  tfe_med <- median(tfe_data, na.rm = TRUE)
+  med_diff <- control_med - tfe_med
+  
+  cat("\n", tp, ":\n", sep = "")
+  cat("  Control median LAI:", round(control_med, 2), "m² m⁻² (n =", length(control_data), ")\n")
+  cat("  TFE median LAI:", round(tfe_med, 2), "m² m⁻² (n =", length(tfe_data), ")\n")
+  cat("  Median difference (Control - TFE):", round(med_diff, 2), "m² m⁻²\n")
+  cat("  Wilcoxon U statistic:", wilcox_result$statistic, "\n")
+  cat("  p-value:", round(wilcox_result$p.value, 4), "\n")
+  cat("  Significance:", ifelse(wilcox_result$p.value < 0.001, "***",
+                                ifelse(wilcox_result$p.value < 0.01, "**",
+                                       ifelse(wilcox_result$p.value < 0.05, "*", "ns"))), "\n")
+  
+  # Store results
+  new_row <- data.frame(
+    time_point = tp,
+    control_median = control_med,
+    tfe_median = tfe_med,
+    median_difference = med_diff,
+    p_value = wilcox_result$p.value,
+    wilcoxon_stat = wilcox_result$statistic,
+    n_control = length(control_data),
+    n_tfe = length(tfe_data),
+    stringsAsFactors = FALSE
+  )
+  
+  treatment_diff_results <- rbind(treatment_diff_results, new_row)
+}
+
+print(treatment_diff_results)
+
+```
+
+```{r Fig 3, include=FALSE}
+# Prepare TLS data for visualization
+# Convert tls data to long format for plotting
+plot_data <- tls %>%
+  select(ID, plot, area_crown_to_dbh, volume_crown_to_dbh, volume_crown_to_dbh2) %>%
+  pivot_longer(
+    cols = c(area_crown_to_dbh, volume_crown_to_dbh, volume_crown_to_dbh2),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  rename(treatment = plot) %>%
+  mutate(
+    metric_clean = case_when(      
+      metric == "area_crown_to_dbh" ~ "Area:DBH\n(m² m⁻¹)",
+      metric == "volume_crown_to_dbh" ~ "Volume:DBH\n(m³ m⁻¹)",
+      metric == "volume_crown_to_dbh2" ~ "Volume:DBH²\n(m³ m⁻²)",
+      TRUE ~ metric
+    )
+  )
+
+# Create TLS metrics boxplot for top-left panel
+tls_plot <- ggplot(plot_data, aes(x = treatment, y = value, fill = treatment)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.6, width = 0.6) +
+  facet_wrap(~ metric_clean, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3")) +
+  scale_x_discrete(labels = c("Control" = "CTs", "TFE" = "PTs")) +
+  labs(
+    title = "A)",
+    x = "",
+    y = "Relative Crown Size",
+    fill = "Treatment"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0, vjust = 1, size = 12, face = "bold"),
+    strip.text = element_text(size = 7),
+    strip.background = element_rect(fill = "white", color = "grey50", size = 0.5),
+    legend.position = "none",
+    axis.title.x = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(size = 10, face = "bold"),
+    axis.text = element_text(size = 9),
+    panel.spacing = unit(0.5, "lines")
+  )
+
+# Create empty panel for top-right
+empty_panel <- ggplot() +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0, size = 12, face = "bold"),
+    panel.background = element_rect(fill = "white", color = "white", size = 0.5),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# LAI temporal dynamics plot for bottom panel
+lai_plot <- ggplot(LAI_plot_data, aes(x = date, y = Le, fill = treatment)) +
+  #geom_jitter(aes(color = treatment), width = 10, alpha = 0.1, size = 2) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "errorbar", width = 15, 
+               aes(color = treatment), size = 1.2, alpha = 0.8, linewidth = 1) +
+  stat_summary(fun = "median", geom = "point", size = 3, 
+               aes(color = treatment), shape = 18) +
+  stat_summary(fun = "median", geom = "line", 
+               aes(group = treatment, color = treatment), linewidth = 1.2, alpha = 0.9) +
+  labs(
+    title = "C)",
+    x = "",
+    y = "Leaf Area Index [m² m⁻²]",
+    color = "Treatment"
+  ) +
+  scale_color_manual(values = c("TFE" = "goldenrod3", "Control" = "#404788FF")) +
+  scale_x_date(date_labels = "%b '%y", date_breaks = "2 months") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0, size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = c(0.80, 0.85),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 9),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.margin = margin(5, 5, 5, 5),
+    panel.grid.major = element_line(color = "grey90", linewidth = 0.5),
+    panel.grid.minor = element_line(color = "grey95", linewidth = 0.25),
+    panel.border = element_rect(color = "grey50", fill = NA, linewidth = 0.8)
+  ) +
+  coord_cartesian(ylim = c(2.5,7)) +
+  guides(fill = "none")
+
+# Create the 3-panel layout: TLS metrics (top-left) + empty (top-right), LAI (bottom)
+top_row <- tls_plot + empty_panel + plot_layout(widths = c(1, 1))
+combined_figure <- top_row / lai_plot +
+ plot_layout(heights = c(1, 1))
+
+# Display the combined figure
+ print(combined_figure)
+
+#ggsave("plots/fig3.png", combined_figure, width = 8, height = 5, dpi = 300)
+
+```
+```{r PAVD forest structure and Fig4, include=FALSE}
+# Reshape the data to long format
+pavd_long <- pavd %>%
+  select(height, weightedPAVD_mean_A, weightedPAVD_sd_A, weightedPAVD_mean_B, weightedPAVD_sd_B) %>%
+  pivot_longer(
+    cols = -height,
+    names_to = c("metric", "plot"),
+    names_pattern = "weighted(PAVD_mean|PAVD_sd)_(A|B)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) %>%
+  mutate(
+    treatment = case_when(
+      plot == "A" ~ "Control",
+      plot == "B" ~ "TFE",
+      TRUE ~ plot
+    ),
+    # Calculate 95 % confidence intervals knowing that each plot has 36 locations
+    PAVD_se = PAVD_sd / sqrt(36),
+    PAVD_mean = PAVD_mean,
+    PAVD_sd = PAVD_sd,
+    ymin = PAVD_mean - PAVD_se,
+    ymax = PAVD_mean + PAVD_se
+  )
+
+# Create PAVD plot with revised strata labels
+pavd_plot <- ggplot(pavd_long %>% arrange(treatment, height), aes(x = PAVD_mean, y = height, color = treatment, fill = treatment)) +
+  # Add 95% CI ribbon around the mean
+  geom_ribbon(aes(xmin = ymin, xmax = ymax), alpha = 0.3, color = NA) +
+  
+  # Add stratum boundaries and labels
+  geom_hline(yintercept = 10, linetype = "dashed", color = "grey40", size = 0.8) +  # Understory boundary
+  geom_hline(yintercept = 20, linetype = "dashed", color = "grey40", size = 0.8) +  # Subcanopy boundary
+  geom_hline(yintercept = 30, linetype = "dashed", color = "grey40", size = 0.8) +  # Main canopy boundary
+  
+  # Add the mean line
+  geom_path(aes(group = treatment), size = 1.2) +
+  
+  # Add stratum labels
+  annotate("text", x = 0.11, y = 5, label = "Understory\n(0-10m)", 
+           hjust = 0, vjust = 0.5, size = 3, color = "grey30", fontface = "bold") +
+  annotate("text", x = 0.11, y = 15, label = "Subcanopy\n(10-20m)", 
+           hjust = 0, vjust = 0.5, size = 3, color = "grey30", fontface = "bold") +
+  annotate("text", x = 0.11, y = 25, label = "Main Canopy\n(20-30m)", 
+           hjust = 0, vjust = 0.5, size = 3, color = "grey30", fontface = "bold") +
+  annotate("text", x = 0.11, y = 40, label = "Emergent Layer\n(>30m)", 
+           hjust = 0, vjust = 0.5, size = 3, color = "grey30", fontface = "bold") +
+  
+  scale_color_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3")) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3")) +
+  labs(
+    y = "Height (m)", 
+    x = "PAVD (m^2 m^-3)",
+    title = "Plant Area Volume Density by Forest Strata",
+    color = "Treatment",
+    fill = "Treatment"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+    legend.position = c(0.85, 0.9),
+    legend.title = element_blank(),
+    legend.background = element_rect(fill = alpha('white', 0.8), color = "grey50"),
+    legend.box.background = element_rect(color = "grey50"),
+    axis.title = element_text(size = 11, face = "bold"),
+    axis.text = element_text(size = 10),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(color = "grey90", size = 0.5),
+    panel.grid.major.y = element_line(color = "grey90", size = 0.5)
+  ) +
+  ylim(0, 50)
+
+ print(pavd_plot)
+#ggsave("plots/fig4.png", pavd_plot, width = 8, height = 8, dpi = 300)
+
+pavd_strata <- pavd_long %>%
+  mutate(
+    stratum = case_when(
+      height >  0 & height <= 10 ~ "Understory (0-10m)",
+      height > 10 & height <= 20 ~ "Subcanopy (10-20m)",
+      height > 20 & height <= 30 ~ "Main Canopy (20-30m)",
+      height > 30 & height <= 40 ~ "Emergent Layer (>30m)"
+    )
+  )
+
+# ===== STATISTICAL TESTS FOR PAVD DIFFERENCES BY STRATUM =====
+
+# Initialize results storage
+pavd_strata_results <- data.frame(
+  stratum = character(),
+  n_control = integer(),
+  n_tfe = integer(),
+  control_mean = numeric(),
+  tfe_mean = numeric(),
+  control_median = numeric(),
+  tfe_median = numeric(),
+  normality_control = character(),
+  normality_tfe = character(),
+  shapiro_control_p = numeric(),
+  shapiro_tfe_p = numeric(),
+  test_used = character(),
+  test_statistic = numeric(),
+  p_value = numeric(),
+  significance = character(),
+  stringsAsFactors = FALSE
+)
+
+# Get unique strata in logical order
+strata_order <- c("Understory (0-10m)", "Subcanopy (10-20m)", 
+                  "Main Canopy (20-30m)", "Emergent Layer (>30m)")
+
+# Loop through each stratum
+for (strat in strata_order) {
+  
+  cat("\n=== ", strat, " ===\n", sep = "")
+  
+  # Extract data by treatment for this stratum
+  control_data <- pavd_strata %>%
+    filter(stratum == strat, treatment == "Control") %>%
+    pull(PAVD_mean)
+  
+  tfe_data <- pavd_strata %>%
+    filter(stratum == strat, treatment == "TFE") %>%
+    pull(PAVD_mean)
+  
+  # Remove NA values
+  control_data <- control_data[!is.na(control_data)]
+  tfe_data <- tfe_data[!is.na(tfe_data)]
+  
+  # Calculate descriptive statistics
+  control_mean <- mean(control_data, na.rm = TRUE)
+  tfe_mean <- mean(tfe_data, na.rm = TRUE)
+  control_median <- median(control_data, na.rm = TRUE)
+  tfe_median <- median(tfe_data, na.rm = TRUE)
+  
+  cat("Control: n =", length(control_data), ", mean =", round(control_mean, 4), 
+      ", median =", round(control_median, 4), "\n")
+  cat("TFE: n =", length(tfe_data), ", mean =", round(tfe_mean, 4), 
+      ", median =", round(tfe_median, 4), "\n")
+  
+  # Test normality using Shapiro-Wilk test
+  shapiro_control <- shapiro.test(control_data)
+  shapiro_tfe <- shapiro.test(tfe_data)
+  
+  # Determine normality (p > 0.05 = normal)
+  normal_control <- ifelse(shapiro_control$p.value > 0.05, "Normal", "Non-normal")
+  normal_tfe <- ifelse(shapiro_tfe$p.value > 0.05, "Normal", "Non-normal")
+  
+  cat("Normality tests:\n")
+  cat("  Control: p =", round(shapiro_control$p.value, 4), "->", normal_control, "\n")
+  cat("  TFE: p =", round(shapiro_tfe$p.value, 4), "->", normal_tfe, "\n")
+  
+  # Choose test based on normality
+  if (normal_control == "Normal" && normal_tfe == "Normal") {
+    # Both normal - use Welch's t-test
+    test_result <- t.test(control_data, tfe_data, alternative = "two.sided", var.equal = FALSE)
+    test_name <- "Welch's t-test"
+    test_stat <- test_result$statistic
+    cat("Test used: Welch's t-test (parametric)\n")
+  } else {
+    # At least one non-normal - use Wilcoxon Mann-Whitney test
+    test_result <- wilcox.test(control_data, tfe_data, alternative = "two.sided")
+    test_name <- "Wilcoxon Mann-Whitney"
+    test_stat <- test_result$statistic
+    cat("Test used: Wilcoxon Mann-Whitney test (non-parametric)\n")
+  }
+  
+  # Determine significance level
+  sig_level <- ifelse(test_result$p.value < 0.001, "***",
+                     ifelse(test_result$p.value < 0.01, "**",
+                            ifelse(test_result$p.value < 0.05, "*", "ns")))
+  
+  # Print test results
+  cat("Test statistic:", round(test_stat, 4), "\n")
+  cat("p-value:", round(test_result$p.value, 4), "\n")
+  cat("Significance:", sig_level, "\n")
+  
+  # Store results
+  new_row <- data.frame(
+    stratum = strat,
+    n_control = length(control_data),
+    n_tfe = length(tfe_data),
+    control_mean = control_mean,
+    tfe_mean = tfe_mean,
+    control_median = control_median,
+    tfe_median = tfe_median,
+    normality_control = normal_control,
+    normality_tfe = normal_tfe,
+    shapiro_control_p = shapiro_control$p.value,
+    shapiro_tfe_p = shapiro_tfe$p.value,
+    test_used = test_name,
+    test_statistic = test_stat,
+    p_value = test_result$p.value,
+    significance = sig_level,
+    stringsAsFactors = FALSE
+  )
+  
+  pavd_strata_results <- rbind(pavd_strata_results, new_row)
+}
+
+# Print summary table
+print(pavd_strata_results)
+
+
+pavd_emergent <- pavd_long %>%
+  filter(height > 30 & height <= 40)
+
+# difference stats test between plots in PAVD_mean
+wilcox.test(PAVD_mean ~ treatment, data = pavd_emergent, alternative = "greater")
+t.test(PAVD_mean ~ treatment, data = pavd_emergent, alternative = "greater", var.equal = FALSE)
+
+```
+
