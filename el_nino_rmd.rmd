@@ -36,6 +36,7 @@ library(BIOMASS)
 library(gam)
 library(summarytools)
 library(patchwork)
+library(grid)
 library(lme4)
 library(MuMIn)
 library(lmerTest)
@@ -487,7 +488,7 @@ spi.p
 # Figure 1 Climate
 SIfig1 <-  ((spi.p / cate)|climate23) + plot_layout(ncol = 2, widths = c(1, 1.75))
 # Display the combined plot
-print(SIfig1)
+windows();print(SIfig1)
 #ggsave("plots/SIfig1.png", width = 8, height = 5, dpi = 300)
 
 ## plot monthly precipitation average (Jan-Dec)
@@ -564,6 +565,13 @@ r.sf <- ggplot(data = sap, aes(y = resilience, x = date)) +
   coord_cartesian(ylim = c(0, 2.5))+
   theme(legend.position = "none")+
   facet_wrap(~plot)
+
+# number of unique trees 
+for(plot in unique(sap$plot)){
+  cat("Number of unique trees in plot", plot, ":", length(unique(sap$ID[sap$plot == plot])), "\n")
+}
+# Total unique trees
+length(unique(sap$ID))
 
 ```
 
@@ -888,7 +896,7 @@ leaf.vpd$delta_pd_md <- leaf.vpd$wp_md - leaf.vpd$wp_pd
 
 ```
 
-```{r stringency plots, echo=FALSE, fig.show='hold', fig.width=7, fig.height=5}
+```{r Fig2, echo=FALSE, fig.show='hold', fig.width=7, fig.height=5}
 # Create height categories for trees above and below 27m
 leaf.vpd$height_category <- ifelse(leaf.vpd$height_m > 27, "Canopy", "Subcanopy")
 
@@ -964,6 +972,7 @@ Sws_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = S_ws, fill =
   geom_vline(xintercept = 3.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
     geom_vline(xintercept = 1.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
   ylab(expression(paste('S '[ WS], ' [MPa]'))) +
+  xlab(NULL)+
   theme_bw()+
   theme(legend.position = c(0.85, 0.85),
         legend.title = element_blank(), 
@@ -971,7 +980,7 @@ Sws_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = S_ws, fill =
         axis.text.x = element_blank(),
         axis.text.y = element_text(size = 11),
         axis.title.y = element_text(size = 12)) +  
-  annotate("text", x = 2.5, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.9, label = "***", vjust = 0.5, hjust = 0.5, size = 6.5) +
+  annotate("text", x = 2.5, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.9, label = "**", vjust = 0.5, hjust = 0.5, size = 6.5) +
   annotate("text", x = 0.65, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.95, label = "A)", vjust = 0, hjust = 1, size = 4, fontface = "bold")
 
  print(Sws_plot)
@@ -989,7 +998,7 @@ WPmd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_md, fill
         axis.title.y = element_text(size = 12))+
   geom_vline(xintercept = 3.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
   geom_vline(xintercept = 1.5, linetype = 'longdash', col = '#8b8b8b', size = 0.3) +
-  annotate("text", x = 0.65, y = max(leaf.vpd$wp_md, na.rm = TRUE) * 0.95, label = "B)", vjust = 0, hjust = 1, size = 4, fontface = "bold")
+  annotate("text", x = 0.65, y = max(leaf.vpd$wp_md, na.rm = TRUE) * 0.95, label = "B)", vjust = 1, hjust = 1, size = 4, fontface = "bold")
 
 WPpd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_pd, fill = plot)) +
   geom_boxplot()+
@@ -1009,14 +1018,15 @@ WPpd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_pd, fill
   annotate("text", x = 2, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
   annotate("text", x = 4.5, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Post-Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
   annotate("text", x = 1, y = min(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "Pre-Drought", vjust = 0.5, hjust = 0.5, size = 3.5) +
-  annotate("text", x = 0.65, y = max(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "C)", vjust = 0, hjust = 1, size = 4, fontface = "bold")
+  annotate("text", x = 0.65, y = max(leaf.vpd$wp_pd, na.rm = TRUE) * 0.95, label = "C)", vjust = 1, hjust = 1, size = 4, fontface = "bold")
 
 # Create combined stacked plot
 combined_wp_stringency <- Sws_plot / WPmd_plot / WPpd_plot
 combined_wp_stringency <- combined_wp_stringency + plot_layout(heights = c(1, 1, 1))
 
- print(combined_wp_stringency)
-#ggsave("plots/Figures/Paper_Figures/combined_stringency_wp.png", combined_wp_stringency, width = 6, height = 10, dpi = 300)
+# Figure 2
+print(combined_wp_stringency)
+ggsave("plots/fig2.png", combined_wp_stringency, width = 6, height = 9, dpi = 300)
 
 # DELTA WP
 
@@ -1317,6 +1327,7 @@ lai_plot <- ggplot(LAI_plot_data, aes(x = date, y = Le, fill = treatment)) +
   ylim(2, 7) +
   guides(fill = "none")  # Remove fill legend since we're using color
 
+print(lai_plot)
 #ggsave("plots/Figures/LAI_Temporal_Dynamics_Control_vs_TFE.png", width = 7, height = 8)
 # Print summary statistics
 
@@ -1430,7 +1441,107 @@ print(treatment_diff_results)
 
 ```
 
-```{r PAVD forest structure, include=FALSE}
+```{r Fig 3, include=FALSE}
+# Prepare TLS data for visualization
+# Convert tls data to long format for plotting
+plot_data <- tls %>%
+  select(ID, plot, area_crown_to_dbh, volume_crown_to_dbh, volume_crown_to_dbh2) %>%
+  pivot_longer(
+    cols = c(area_crown_to_dbh, volume_crown_to_dbh, volume_crown_to_dbh2),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  rename(treatment = plot) %>%
+  mutate(
+    metric_clean = case_when(      
+      metric == "area_crown_to_dbh" ~ "Area:DBH\n(m² m⁻¹)",
+      metric == "volume_crown_to_dbh" ~ "Volume:DBH\n(m³ m⁻¹)",
+      metric == "volume_crown_to_dbh2" ~ "Volume:DBH²\n(m³ m⁻²)",
+      TRUE ~ metric
+    )
+  )
+
+# Create TLS metrics boxplot for top-left panel
+tls_plot <- ggplot(plot_data, aes(x = treatment, y = value, fill = treatment)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.6, width = 0.6) +
+  facet_wrap(~ metric_clean, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c("Control" = "#404788FF", "TFE" = "goldenrod3")) +
+  scale_x_discrete(labels = c("Control" = "CTs", "TFE" = "PTs")) +
+  labs(
+    title = "A)",
+    x = "",
+    y = "Relative Crown Size",
+    fill = "Treatment"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0, vjust = 1, size = 12, face = "bold"),
+    strip.text = element_text(size = 7),
+    strip.background = element_rect(fill = "white", color = "grey50", size = 0.5),
+    legend.position = "none",
+    axis.title.x = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(size = 10, face = "bold"),
+    axis.text = element_text(size = 9),
+    panel.spacing = unit(0.5, "lines")
+  )
+
+# Create empty panel for top-right
+empty_panel <- ggplot() +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0, size = 12, face = "bold"),
+    panel.background = element_rect(fill = "white", color = "white", size = 0.5),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# LAI temporal dynamics plot for bottom panel
+lai_plot <- ggplot(LAI_plot_data, aes(x = date, y = Le, fill = treatment)) +
+  #geom_jitter(aes(color = treatment), width = 10, alpha = 0.1, size = 2) +
+  stat_summary(fun.data = "mean_cl_boot", geom = "errorbar", width = 15, 
+               aes(color = treatment), size = 1.2, alpha = 0.8, linewidth = 1) +
+  stat_summary(fun = "median", geom = "point", size = 3, 
+               aes(color = treatment), shape = 18) +
+  stat_summary(fun = "median", geom = "line", 
+               aes(group = treatment, color = treatment), linewidth = 1.2, alpha = 0.9) +
+  labs(
+    title = "C)",
+    x = "",
+    y = "Leaf Area Index [m² m⁻²]",
+    color = "Treatment"
+  ) +
+  scale_color_manual(values = c("TFE" = "goldenrod3", "Control" = "#404788FF")) +
+  scale_x_date(date_labels = "%b '%y", date_breaks = "2 months") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0, size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = c(0.80, 0.85),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 9),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.margin = margin(5, 5, 5, 5),
+    panel.grid.major = element_line(color = "grey90", linewidth = 0.5),
+    panel.grid.minor = element_line(color = "grey95", linewidth = 0.25),
+    panel.border = element_rect(color = "grey50", fill = NA, linewidth = 0.8)
+  ) +
+  coord_cartesian(ylim = c(2.5,7)) +
+  guides(fill = "none")
+
+# Create the 3-panel layout: TLS metrics (top-left) + empty (top-right), LAI (bottom)
+top_row <- tls_plot + empty_panel + plot_layout(widths = c(1, 1))
+combined_figure <- top_row / lai_plot +
+ plot_layout(heights = c(1, 1))
+
+# Display the combined figure
+windows(); print(combined_figure)
+
+#ggsave("plots/fig3.png", combined_figure, width = 8, height = 5, dpi = 300)
+
+```
+```{r PAVD forest structure and Fig4, include=FALSE}
 # Reshape the data to long format
 pavd_long <- pavd %>%
   select(height, weightedPAVD_mean_A, weightedPAVD_sd_A, weightedPAVD_mean_B, weightedPAVD_sd_B) %>%
@@ -1506,6 +1617,7 @@ pavd_plot <- ggplot(pavd_long %>% arrange(treatment, height), aes(x = PAVD_mean,
   ylim(0, 50)
 
  print(pavd_plot)
+#ggsave("plots/fig4.png", pavd_plot, width = 8, height = 8, dpi = 300)
 
 pavd_strata <- pavd_long %>%
   mutate(
@@ -1644,3 +1756,4 @@ wilcox.test(PAVD_mean ~ treatment, data = pavd_emergent, alternative = "greater"
 t.test(PAVD_mean ~ treatment, data = pavd_emergent, alternative = "greater", var.equal = FALSE)
 
 ```
+
