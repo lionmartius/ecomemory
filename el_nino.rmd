@@ -17,11 +17,10 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## R-Markdown - Lion R. Martius
 This R Markdown documents the workflow of the data analysis for the paper entitled: Amazonian trees under long-term drought exposure are more resilient to El Niño extreme.
-The docuemt has been designed to facilitate workflow and reproducibility of the data analysis. 
+The document has been designed to facilitate workflow and reproducibility of the data analysis. 
 The analysis is based on the data collected in the Caxiuanã National Forest, Pará, Brazil, during the El Niño event of 2023/24.
 
 ```{r load-packages, message=FALSE, warning=FALSE, include=TRUE}
-# Required Packages
 # Required Packages
 library(ggplot2)
 library(readxl)
@@ -61,6 +60,8 @@ The analysis consists of different datasets.
 8.  *leaf.vpd:* leaf water potential data together with VPD and TLS data from May 2023 to June 2024 (bi-monthly)
 9.  *lai:*      Leaf Area Index data from 2023-2024
 
+All terrestrial laser scanning data (TLS and PAVD), as well as long-term experimental data (soil, met_long, precip) of the long-term drought experiment in Caxiuanã (ESECAFLOR), will only be made available upon request.
+These datasets are still cuurrently in use for other work and publications and cannot be made public yet.
 
 ```{r datasets, include=FALSE}
 # 1. Meteorology data 2023
@@ -91,41 +92,38 @@ lai <- read.csv('data/lai/LAI_combined_2023_2024.csv')
 met23$time <- as.POSIXct(met23$time, format = "%d/%m/%Y %H:%M") # format time
 # Daily Aggregation
 daily_aggregated <- met23 %>%
-  group_by(Date = as.Date(time)) %>%
+  group_by(Date = lubridate::as_date(time)) %>%
   summarize(Daily_Rainfall = sum(precip, na.rm = TRUE))
-# Monthly Aggregation
-monthly_aggregated <- met23 %>%
-  group_by(month = as.Date(month)) %>%
-  summarize(monthly_Rainfall = sum(precip, na.rm = TRUE))
 
 # Met Summary Table
 #view(dfSummary(met23)) # summary table - detection of outliers in temperature
-quantile(met23$T.air42m, probs = c(0.01, 0.99), na.rm = TRUE)
+qq <- quantile(met23$T.air42m, probs = c(0.01, 0.99), na.rm = TRUE)
+summary(met23$T.air42m)
 max(met23$T.air42m, na.rm = TRUE) # 64.8 C degrees unrealsitic - remove
 min(met23$T.air42m, na.rm = TRUE) # 1.3 C degrees unrealsitic - remove
 # Filter out outliers outwith 99% and 1% quantile
-met23 <- met23[met23$T.air42m > 23 & met23$T.air42m < 34,]
+met23 <- met23[met23$T.air42m > qq[1] & met23$T.air42m < qq[2],]
 
 # Filter for 2023 data
 ds <- met23 %>%
   filter(year == 2023)
 # Extract the date from the timestamp
-ds$date <- as.Date(ds$time)
+ds$date <- lubridate::as_date(ds$time)
 
-# Calculate daily maxima for temperature and VPD, and daily minima for RH (during dry season)
-ds <- ds %>%
+ds_filt <- ds %>%
   filter(month >= 8 & month <= 11)
 
-daily_max_min <- ds %>%
+daily_max_min_filt <- ds_filt %>%
   group_by(date) %>%
   summarize(
     daily_max_temp = max(T.air42m, na.rm = TRUE),
-    daily_max_vpd = max(vpd42m, na.rm = TRUE)*10
+    daily_max_vpd = max(vpd42m, na.rm = TRUE)*10 # convert to hPa
   ) %>%
   ungroup()
 
 # Calculate the mean and standard error of the daily maxima and minima
-summary_stats <- daily_max_min %>%
+# for RH (during dry season)
+summary_stats <- daily_max_min_filt %>%
   summarize(
     mean_max_temp = mean(daily_max_temp, na.rm = TRUE),
     se_max_temp = sd(daily_max_temp, na.rm = TRUE),
@@ -133,20 +131,7 @@ summary_stats <- daily_max_min %>%
     se_max_vpd = sd(daily_max_vpd, na.rm = TRUE)
   )
 # Print the summary statistics
- print(summary_stats)
-
-# Before plotting - get entire year period 
-ds <- met23 %>%
-  filter(year == 2023)
-ds$date <- as.Date(ds$time)
-daily_max_min <- ds %>%
-  group_by(date) %>%
-  summarize(
-    daily_max_temp = max(T.air42m, na.rm = TRUE),
-    daily_max_vpd = max(vpd42m, na.rm = TRUE)*10
-  ) %>%
-  ungroup()
-
+print(summary_stats)
 
 # Plot climate23
 climate23 <- ggplot() +
@@ -193,18 +178,17 @@ ggplot(data = daily_aggregated, aes(x = Date, y = Daily_Rainfall)) +
        x = "Date",
        y = "Daily Rainfall (mm)")
 
-
+#ggsave("plots/sfig6.png", width = 7, height = 4)
 
 # Long term meteorological data
 # Convert time and extract date components
 met_long$time <- as.POSIXct(met_long$time, format = "%Y-%m-%dT%H:%M:%SZ")
-met_long$date <- as.Date(met_long$time)
+met_long$date <- lubridate::as_date(met_long$time)
 met_long$year <- as.numeric(format(met_long$time, "%Y"))
 met_long$month <- as.numeric(format(met_long$time, "%m"))
 met_long$day <- as.numeric(format(met_long$time, "%d"))
-
-#view(dfSummary(met_long)) # summary table 
-# Clean temperature data (remove unrealistic values)
+# view(dfSummary(met_long)) # summary table 
+# Clean temperature data (remove unrealistic values, checked from dfsummary)
 met_long$temperature_42m_C[met_long$temperature_42m_C > 50 | met_long$temperature_42m_C < 15] <- NA
 met_long$temperature_28m_C[met_long$temperature_28m_C > 50 | met_long$temperature_28m_C < 15] <- NA
 
@@ -296,7 +280,7 @@ rh_percentile <- calc_percentile_safe(rh_2023_mean, rh_historical_data)
 
 # Statistical significance tests
 temp_test <- NULL
-vpd_test <- NULL  
+vpd_test <- NULL
 rh_test <- NULL
 
 if (length(temp_2023_data) > 5 && length(temp_historical_data) > 5) {
@@ -332,6 +316,7 @@ if (!is.null(temp_test)) {
 } else {
   cat("Statistical test could not be performed\n")
 }
+summary(temp_2023_data)
 
 cat("\n=== VPD ANALYSIS ===\n") 
 cat(sprintf("2023 daily max VPD: %.2f ± %.2f kPa (n=%d days)\n", 
@@ -347,6 +332,7 @@ if (!is.null(vpd_test)) {
 } else {
   cat("Statistical test could not be performed\n")
 }
+summary(vpd_2023_data)
 
 cat("\n=== RELATIVE HUMIDITY ANALYSIS ===\n")
 cat(sprintf("2023 daily min RH: %.2f ± %.2f%% (n=%d days)\n", 
@@ -359,7 +345,7 @@ if (!is.null(rh_test)) {
 } else {
   cat("Statistical test could not be performed\n")
 }
-
+summary(rh_2023_data)
 ```
 
 ```{r precip, include=FALSE}
@@ -367,6 +353,7 @@ if (!is.null(rh_test)) {
 # Data Preparation 
 # Convert 'time' to Date format
 precip$date <- as.Date(paste0(precip$time, "-01"))
+
 # Order the data frame by the new 'date' column
 precip <- precip[order(precip$date),]
 # Monthly Precipitation in Caxiuanã (1981-2023)
@@ -389,7 +376,7 @@ precip <- precip %>%
   mutate(season = ifelse(month >= 1 & month <= 7 | month == 12, 'w', 'd')) 
 
 seasonal_mean <- precip %>%
-  filter(year!= 2023 & year != 2024) %>%
+  filter(year != 2023 & year != 2024) %>%
   group_by(year, season) %>%
   summarize(mean_precip = sum(precip, na.rm = TRUE)) # calculate seasonal mean precipitation but excluding extreme year 2023 + 2024
   
@@ -526,7 +513,6 @@ SIfig3b <- ggplot(data = precip[precip$year == 2023,], aes(x = factor(month), y 
 ```{r sapflow resilience, include=FALSE}
 sap$date <- as.Date(sap$date, format = "%Y-%m-%d")
 sap$plot <- as.factor(sap$plot)
-
 ## Resilience - Sapflow 
 
 # Reduce variations
@@ -566,8 +552,8 @@ r.sf <- ggplot(data = sap, aes(y = resilience, x = date)) +
   theme(legend.position = "none")+
   facet_wrap(~plot)
 
-# number of unique trees 
-for(plot in unique(sap$plot)){
+# number of unique trees
+for (plot in unique(sap$plot)) {
   cat("Number of unique trees in plot", plot, ":", length(unique(sap$ID[sap$plot == plot])), "\n")
 }
 # Total unique trees
@@ -731,10 +717,11 @@ pred_data <- data.frame(
 # Get predictions with confidence intervals
 predictions <- emmeans(lmm, ~ plot, at = list(numdate = drought_end_day, crown_vol_scaled = 0))
 summary(predictions, infer = TRUE)
-
+# predict(lmm, newdata = pred_data, re.form = NA)
 
 # CROWN MODEL
-lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + numdate_c:log_vol_c  + (1 | ID), data = sap.rs) # adding crown architecture and swc/biomass
+# lmm <- lmer(resilience ~ numdate_c * plot + crown_volume_m3 + numdate_c:crown_volume_m3  + (1 | ID), data = sap.rs) # adding crown architecture and swc/biomass
+lmm <- lmer(resilience ~ numdate_c * plot + log_vol_c + numdate_c:log_vol_c  + (1 | ID), data = sap.rs) # adding log crown architecture and swc/biomass
 summary(lmm)
 anova(lmm)
 ranova(lmm, reduce.terms = TRUE)
@@ -792,6 +779,7 @@ anova(lmm)
 ranova(lmm, reduce.terms = TRUE)
 r.squaredGLMM(lmm)
 confint(lmm)
+cor(sap.rl %>% select(resilience, numdate_c, log_vol_c, swc_c), use = "complete.obs")
 
 # log volume ns - remove
 lmm <- lmer(resilience ~ numdate_c * plot + swc_c + numdate_c:swc_c + (1 | ID), data = sap.rl)
@@ -983,7 +971,7 @@ Sws_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = S_ws, fill =
   annotate("text", x = 2.5, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.9, label = "**", vjust = 0.5, hjust = 0.5, size = 6.5) +
   annotate("text", x = 0.65, y = max(leaf.vpd$S_ws, na.rm = TRUE) * 0.95, label = "A)", vjust = 0, hjust = 1, size = 4, fontface = "bold")
 
- print(Sws_plot)
+print(Sws_plot)
 # Plot WP md for each campaign 
 WPmd_plot <- ggplot(data = leaf.vpd, mapping = aes(x = campaign, y = wp_md, fill = plot)) +
   geom_boxplot()+
@@ -1026,7 +1014,7 @@ combined_wp_stringency <- combined_wp_stringency + plot_layout(heights = c(1, 1,
 
 # Figure 2
 print(combined_wp_stringency)
-ggsave("plots/fig2.png", combined_wp_stringency, width = 6, height = 9, dpi = 300)
+# ggsave("plots/fig2.png", combined_wp_stringency, width = 6, height = 9, dpi = 300)
 
 # DELTA WP
 
